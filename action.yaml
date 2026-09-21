@@ -91,6 +91,40 @@ runs:
       uses: actions/setup-node@v7
       with:
         node-version: ${{ steps.node-version.outputs.version }}
+    - name: Expose node outside $HOME so pre-commit reuses it
+      shell: bash
+      run: |
+        # pre-commit only treats node/npm as a usable "system" install when the
+        # resolved executable lives OUTSIDE $HOME and outside a /shims/ path
+        # (pre_commit/lang_base.py::exe_exists). When that check fails,
+        # pre_commit/languages/node.py::get_default_version falls back to
+        # `default`, and every `language: node` hook installs a *second* node
+        # through nodeenv whose bundled npm is an unpinned moving target.
+        #
+        # actions/setup-node installs into the runner tool cache, which on
+        # self-hosted runners can sit under $HOME (e.g.
+        # /home/runner/_work/_tool), so that check fails and we pay for a
+        # duplicate node download. Symlinking the node we just installed to a
+        # path outside $HOME lets pre-commit take its own `nodeenv -n system`
+        # fast path instead, and keeps the npm used by node hooks equal to the
+        # one we control here.
+        node_bin="$(command -v node || true)"
+        npm_bin="$(command -v npm || true)"
+        if [[ -z "$node_bin" || -z "$npm_bin" ]]; then
+          echo "node/npm not on PATH; leaving pre-commit to manage its own node"
+          exit 0
+        fi
+
+        # Deliberately not named "shims": pre-commit rejects those paths.
+        dir="${RUNNER_TEMP:-/tmp}/action-pre-commit-node"
+        if [[ "$dir" == "$HOME"* ]]; then
+          dir=/tmp/action-pre-commit-node
+        fi
+        mkdir -p "$dir"
+        ln -sf "$node_bin" "$dir/node"
+        ln -sf "$npm_bin" "$dir/npm"
+        echo "$dir" >> "$GITHUB_PATH"
+        echo "exposed node=$node_bin npm=$npm_bin via $dir"
     - name: Commitlint
       # This version needs to be sync'd with the repo HEAD if a major version is cut
       if: inputs.disable-commitlint != 'true'
